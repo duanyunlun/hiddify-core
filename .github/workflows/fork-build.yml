@@ -96,8 +96,20 @@ jobs:
           else
             test -f bin/hiddify-core.dll || { echo "hiddify-core.dll missing"; exit 1; }
             test -f bin/HiddifyCli.exe || { echo "HiddifyCli.exe missing"; exit 1; }
-            tar -czvf "out/${{ matrix.artifact }}.tar.gz" \
-              -C bin hiddify-core.dll HiddifyCli.exe
+            # Ship the cgo-generated header as well. hiddify-app's ffigen needs
+            # hiddify-core/bin/desktop.h, and upstream's release tarball does not
+            # contain any header, which forces the app build to have a C
+            # toolchain to regenerate it. Including it here removes that
+            # requirement.
+            if [ -f bin/hiddify-core.h ]; then
+              cp bin/hiddify-core.h bin/desktop.h
+              tar -czvf "out/${{ matrix.artifact }}.tar.gz" \
+                -C bin hiddify-core.dll HiddifyCli.exe desktop.h
+            else
+              echo "warning: bin/hiddify-core.h not found, packaging without the header"
+              tar -czvf "out/${{ matrix.artifact }}.tar.gz" \
+                -C bin hiddify-core.dll HiddifyCli.exe
+            fi
           fi
           ls -lh out/
 
