@@ -72,13 +72,11 @@ windows-amd64: prepare
 	echo "core built, now building cli" 
 	ls -R $(BINDIR)/
 	go install -mod=readonly github.com/akavel/rsrc@latest ||echo "rsrc error in installation"
-	go run ./cli tunnel exit
-	cp $(BINDIR)/$(LIBNAME).dll ./$(LIBNAME).dll
 	$$(go env GOPATH)/bin/rsrc -ico ./assets/hiddify-cli.ico -o ./cmd/bydll/cli.syso ||echo "rsrc error in syso"
-	env GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc CGO_LDFLAGS="$(LIBNAME).dll" $(GOBUILDSRV) -o $(BINDIR)/$(CLINAME).exe ./cmd/bydll
-	rm ./*.dll
-	if [ ! -f $(BINDIR)/$(LIBNAME).dll -o ! -f $(BINDIR)/$(CLINAME).exe -o ! -f $(BINDIR)/libcronet.dll ]; then \
-		echo "Error: $(LIBNAME).dll, $(CLINAME).exe or libcronet.dll missing"; \
+	env GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc $(GOBUILDSRV) -tags $(TAGS),$(WINDOWS_ADD_TAGS) -o $(BINDIR)/$(CLINAME).exe ./cmd/main
+	if [ ! -f $(BINDIR)/$(LIBNAME).dll -o ! -f $(BINDIR)/$(CLINAME).exe ]; then \
+		echo "Error: $(LIBNAME).dll or $(CLINAME).exe missing"; \
+		ls -R $(BINDIR); \
 		exit 1; \
 	fi
 

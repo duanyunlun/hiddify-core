@@ -1,0 +1,109 @@
+name: Build fork artifacts
+
+# Manual trigger only: this fork must never build on a push or on a tag, because
+# every run consumes the account's Actions minutes.
+#
+# Builds only what this fork needs:
+#   - hiddify-lib-android.tar.gz    (libhiddify-core.so + hiddify-core.aar)
+#   - hiddify-lib-windows-amd64.tar.gz (hiddify-core.dll + HiddifyCli.exe)
+#
+# The asset names match what hiddify-app's Makefile downloads
+# ($(CORE_NAME)-<platform>.tar.gz, CORE_NAME=hiddify-lib), so pointing the app at
+# this fork's release works without changing the app.
+on:
+  workflow_dispatch:
+    inputs:
+      tag-name:
+        description: "Release tag to attach the artifacts to (e.g. v4.1.0-f1)"
+        type: string
+        required: true
+        default: "v4.1.0-f1"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: hiddify-lib-android
+            target: android
+          - artifact: hiddify-lib-windows-amd64
+            target: windows-amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          fetch-depth: 0
+          submodules: "recursive"
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "^1.26.0"
+
+      - name: Setup Java 17
+        if: matrix.target == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: Setup Android NDK
+        if: matrix.target == 'android'
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+
+      - name: Show versions
+        run: |
+          go version
+          gcc --version | head -n1
+
+      - name: Build
+        env:
+          # Only needed by the android target; setup-ndk leaves it empty for
+          # windows, which is harmless.
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: make ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          set -e
+          mkdir -p out
+          if [ "${{ matrix.target }}" = "android" ]; then
+            # `make android` produces a single .aar; its jni/<abi>/*.so members
+            # are packaged inside it, exactly as the upstream build does.
+            test -f bin/hiddify-core.aar || { echo "hiddify-core.aar missing"; exit 1; }
+            tar -czvf "out/${{ matrix.artifact }}.tar.gz" -C bin hiddify-core.aar
+          else
+            test -f bin/hiddify-core.dll || { echo "hiddify-core.dll missing"; exit 1; }
+            test -f bin/HiddifyCli.exe || { echo "HiddifyCli.exe missing"; exit 1; }
+            tar -czvf "out/${{ matrix.artifact }}.tar.gz" \
+              -C bin hiddify-core.dll HiddifyCli.exe
+          fi
+          ls -lh out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}.tar.gz
+          retention-days: 7
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag-name }}
+          files: out/${{ matrix.artifact }}.tar.gz
+          fail_on_unmatched_files: false
