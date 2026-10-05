@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strings"
 	sync "sync"
 	"time"
@@ -595,6 +596,20 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 	routeRules := []option.Rule{}
 	rulesets := []option.RuleSet{}
 
+	// defaultRuleSetTags are the tags this function may register on its own (see
+	// the BlockAds and region branches below). User rules are allowed to
+	// reference them, so a reference to one of these is not a mistake.
+	defaultRuleSetTags := map[string]bool{
+		"geosite-ads":           true,
+		"geosite-malware":       true,
+		"geosite-phishing":      true,
+		"geosite-cryptominers":  true,
+		"geoip-phishing":        true,
+		"geoip-malware":         true,
+		"geoip-" + hopt.Region:   true,
+		"geosite-" + hopt.Region: true,
+	}
+
 	// if opt.EnableTun && runtime.GOOS == "android" {
 	// 	// routeRules = append(
 	// 	// 	routeRules,
@@ -633,6 +648,54 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 	// 	},
 	// },
 	// )
+	// Rule set definitions coming from the client. These must be registered
+	// before any rule that references them, otherwise sing-box rejects the
+	// config for an unknown rule_set.
+	userRuleSetTags := make(map[string]bool)
+	for _, entry := range hopt.RuleSets {
+		ruleSet, ok := entry.MakeRuleSet()
+		if !ok {
+			addRouteRuleWarning("skipping invalid rule set entry: " + entry.Tag)
+			continue
+		}
+		if len(ruleSet.Tag) > 0 {
+			if userRuleSetTags[ruleSet.Tag[0]] {
+				continue
+			}
+			userRuleSetTags[ruleSet.Tag[0]] = true
+		}
+		rulesets = append(rulesets, ruleSet)
+	}
+
+	// User defined routing rules. They are inserted here on purpose:
+	//   - after sniff / hijack-dns / the private-address and force-direct rules,
+	//     so that infrastructure rules keep working;
+	//   - before the .region suffix and geoip/geosite rules, so a user rule can
+	//     override the region defaults (this was the point of the whole feature).
+	orderedUserRules := make([]RouteRuleEntry, 0, len(hopt.RouteRules.Rules))
+	for _, rule := range hopt.RouteRules.Rules {
+		if rule.IsEnabled() {
+			orderedUserRules = append(orderedUserRules, rule)
+		}
+	}
+	sort.SliceStable(orderedUserRules, func(i, j int) bool {
+		return orderedUserRules[i].ListOrder < orderedUserRules[j].ListOrder
+	})
+	for i := range orderedUserRules {
+		rule := &orderedUserRules[i]
+		for _, tag := range rule.RuleSets {
+			if !userRuleSetTags[tag] && !defaultRuleSetTags[tag] {
+				addRouteRuleWarning("route rule references undefined rule set: " + tag + " (rule: " + rule.Name + ")")
+			}
+		}
+		if routeRule, ok := rule.MakeRouteRule(); ok {
+			routeRules = append(routeRules, routeRule)
+		}
+		if dnsRule, ok := rule.MakeDNSRule(hopt); ok {
+			dnsRules = append(dnsRules, dnsRule)
+		}
+	}
+
 	forceDirectRules, err := addForceDirect(options, hopt)
 	if err != nil {
 		return err
@@ -814,7 +877,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geosite-ads"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geosite-category-ads-all.srs",
+				URL:            defaultRuleSetURL(hopt, "geosite-category-ads-all"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -824,7 +887,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geosite-malware"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geosite-malware.srs",
+				URL:            defaultRuleSetURL(hopt, "geosite-malware"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -834,7 +897,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geosite-phishing"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geosite-phishing.srs",
+				URL:            defaultRuleSetURL(hopt, "geosite-phishing"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -844,7 +907,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geosite-cryptominers"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geosite-cryptominers.srs",
+				URL:            defaultRuleSetURL(hopt, "geosite-cryptominers"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -854,7 +917,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geoip-phishing"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geoip-phishing.srs",
+				URL:            defaultRuleSetURL(hopt, "geoip-phishing"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -864,7 +927,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geoip-malware"},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/block/geoip-malware.srs",
+				URL:            defaultRuleSetURL(hopt, "geoip-malware"),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -961,7 +1024,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geoip-" + hopt.Region},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/country/geoip-" + hopt.Region + ".srs",
+				URL:            defaultRuleSetURL(hopt, "geoip-"+hopt.Region),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},
@@ -971,7 +1034,7 @@ func setRoutingOptions(options *option.Options, hopt *HiddifyOptions) error {
 			Tag:    badoption.Listable[string]{"geosite-" + hopt.Region},
 			Format: C.RuleSetFormatBinary,
 			RemoteOptions: option.RemoteRuleSet{
-				URL:            "https://raw.githubusercontent.com/hiddify/hiddify-geo/rule-set/country/geosite-" + hopt.Region + ".srs",
+				URL:            defaultRuleSetURL(hopt, "geosite-"+hopt.Region),
 				UpdateInterval: badoption.Duration(5 * time.Hour * 24),
 				DownloadDetour: OutboundSelectTag,
 			},

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	reflect "reflect"
 	"strconv"
@@ -23,7 +24,24 @@ type HiddifyOptions struct {
 	BalancerStrategy        string `json:"balancer-strategy,omitempty" overridable:"true"`
 	// GeoIPPath        string      `json:"geoip-path"`
 	// GeoSitePath      string      `json:"geosite-path"`
-	Rules     []Rule      `json:"rules,omitempty" overridable:"true"`
+	// Rules is the legacy rule list. It is kept for JSON compatibility only: the
+	// type it referenced no longer exists, so it is never populated.
+	Rules []Rule `json:"rules,omitempty" overridable:"true"`
+
+	// RouteRules carries the routing rules created in the client. This field has
+	// no json tag on purpose: UnmarshalJSON (see below) accepts every spelling the
+	// clients have used ("route-rule", "route_rule", "routeRule", ...) so that a
+	// key mismatch can never again silently drop every rule.
+	RouteRules RouteRules `json:"-"`
+	// RuleSets declares the rule sets referenced by RouteRules.
+	RuleSets []RuleSetEntry `json:"-"`
+	// RuleSetBaseURL overrides where the default region rule sets are downloaded
+	// from. The layout is "<base>/geosite-<region>.srs" and
+	// "<base>/geoip-<region>.srs". It defaults to DefaultRegionRuleSetBaseURL,
+	// which serves complete rule sets; the historical hiddify-geo mirror is kept
+	// as an explicit fallback (LegacyRegionRuleSetBaseURL).
+	RuleSetBaseURL string `json:"rule_set_base_url,omitempty"`
+
 	Warp      WarpOptions `json:"warp,omitempty"`
 	Warp2     WarpOptions `json:"warp2,omitempty"`
 	Mux       MuxOptions  `json:"mux,omitempty" overridable:"true"`
@@ -35,6 +53,131 @@ type HiddifyOptions struct {
 	URLTestOptions
 	RouteOptions
 	ChainOptions
+}
+
+// routeRuleKeys / ruleSetKeys are the top level spellings the clients have used.
+// All of them are accepted so that a rename on the client side degrades to
+// "rules ignored" instead of silently losing the whole feature.
+var routeRuleKeys = []string{"route-rule", "route_rule", "routeRule", "routeRules", "route_rules"}
+
+var ruleSetKeys = []string{"rule-set", "rule_set", "ruleSet", "ruleSets", "rule_sets"}
+
+// UnmarshalJSON is a compatibility layer in front of the generated decoder. It
+//   - folds the camelCase / snake_case / kebab-case spellings of every option key
+//     onto the canonical kebab-case tag, because the client serializes this
+//     struct with FieldRename.kebab while the tags are a mix of both;
+//   - collects the routing rules and rule set declarations, which are accepted
+//     under several top level key names.
+func (h *HiddifyOptions) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	normalized := make(map[string]json.RawMessage, len(raw))
+	for key, value := range raw {
+		canonical := canonicalHiddifyOptionKey(key)
+		if _, taken := normalized[canonical]; !taken {
+			normalized[canonical] = value
+		}
+	}
+	for _, key := range routeRuleKeys {
+		if value, ok := normalized[key]; ok {
+			var rules RouteRules
+			if err := json.Unmarshal(value, &rules); err != nil {
+				return fmt.Errorf("invalid route rules: %w", err)
+			}
+			h.RouteRules = rules
+			delete(normalized, key)
+			break
+		}
+	}
+	for _, key := range ruleSetKeys {
+		if value, ok := normalized[key]; ok {
+			var entries []RuleSetEntry
+			if err := json.Unmarshal(value, &entries); err != nil {
+				return fmt.Errorf("invalid rule sets: %w", err)
+			}
+			h.RuleSets = entries
+			delete(normalized, key)
+			break
+		}
+	}
+	reencoded, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	type plain HiddifyOptions
+	return json.Unmarshal(reencoded, (*plain)(h))
+}
+
+// hiddifyOptionKeyAliases maps the snake_case spelling produced by
+// toSnakeCase onto the kebab-case key the struct tag uses.
+var hiddifyOptionKeyAliases = map[string]string{
+	"enable_full_config":            "enable-full-config",
+	"log_level":                     "log-level",
+	"log_file":                      "log-file",
+	"enable_clash_api":              "enable-clash-api",
+	"clash_api_port":                "clash-api-port",
+	"web_secret":                    "web-secret",
+	"block_ads":                     "block-ads",
+	"use_xray_core_when_possible":   "use-xray-core-when-possible",
+	"balancer_strategy":             "balancer-strategy",
+	"tls_tricks":                    "tls-tricks",
+	"enable_ntp":                    "enable-ntp",
+	"remote_dns_address":            "remote-dns-address",
+	"remote_dns_domain_strategy":    "remote-dns-domain-strategy",
+	"direct_dns_address":            "direct-dns-address",
+	"direct_dns_domain_strategy":    "direct-dns-domain-strategy",
+	"independent_dns_cache":         "independent-dns-cache",
+	"enable_fake_dns":               "enable-fake-dns",
+	"enable_tun":                    "enable-tun",
+	"enable_tun_service":            "enable-tun-service",
+	"set_system_proxy":              "set-system-proxy",
+	"mixed_port":                    "mixed-port",
+	"tproxy_port":                   "tproxy-port",
+	"redirect_port":                 "redirect-port",
+	"direct_port":                   "direct-port",
+	"strict_route":                  "strict-route",
+	"tun_implementation":            "tun-implementation",
+	"connection_test_url":           "connection-test-url",
+	"connection_test_urls":          "connection-test-urls",
+	"url_test_interval":             "url-test-interval",
+	"resolve_destination":           "resolve-destination",
+	"ipv6_mode":                     "ipv6-mode",
+	"bypass_lan":                    "bypass-lan",
+	"allow_connection_from_lan":     "allow-connection-from-lan",
+	"block_quic":                    "block-quic",
+	"enable_fragment":               "enable-fragment",
+	"fragment_size":                 "fragment-size",
+	"fragment_sleep":                "fragment-sleep",
+	"mixed_sni_case":                "mixed-sni-case",
+	"enable_padding":                "enable-padding",
+	"padding_size":                  "padding-size",
+	"max_streams":                   "max-streams",
+	"clean_ip":                      "clean-ip",
+	"clean_port":                    "clean-port",
+	"wireguard_config":              "wireguard-config",
+	"extra_security":                "extra-security",
+	"unblocker":                     "unblocker",
+	"chain_status":                  "chain-status",
+	"rule_set_base_url":             "rule_set_base_url",
+}
+
+func canonicalHiddifyOptionKey(key string) string {
+	// The struct tags are kebab-case, so a kebab-case key is already canonical
+	// and must be passed through untouched (toSnakeCase would destroy it).
+	if strings.ContainsRune(key, '-') {
+		return key
+	}
+	snake := toSnakeCase(key)
+	if alias, ok := hiddifyOptionKeyAliases[snake]; ok {
+		return alias
+	}
+	return snake
 }
 
 type DNSOptions struct {
