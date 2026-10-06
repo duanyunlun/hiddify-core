@@ -268,6 +268,68 @@ func TestUserRulesPrecedeRegionRules(t *testing.T) {
 	}
 }
 
+// The client serializes its option struct with FieldRename.kebab, so the rule
+// set list arrives as the plural kebab key "rule-sets". An earlier hand-written
+// list of accepted spellings did not contain it and the whole list was dropped
+// silently, so every spelling is pinned here.
+func TestRuleSetKeySpellingsAreAccepted(t *testing.T) {
+	spellings := []string{
+		`"rule-sets"`, // what the Flutter client actually sends
+		`"rule-set"`,
+		`"rule_set"`,
+		`"rule_sets"`,
+		`"ruleSet"`,
+		`"ruleSets"`,
+		`"ruleSets"`,
+	}
+	for _, key := range spellings {
+		settings := `{` + key + `: [
+		  {"tag": "geosite-bilibili", "type": "remote", "format": "binary",
+		   "url": "https://example.com/bilibili.srs"}
+		]}`
+		encoded, opts := buildAndMarshal(t, settings)
+		if len(opts.RuleSets) != 1 {
+			t.Fatalf("key %s: expected 1 rule set, got %d", key, len(opts.RuleSets))
+		}
+		if opts.RuleSets[0].Tag != "geosite-bilibili" {
+			t.Fatalf("key %s: tag not parsed, got %q", key, opts.RuleSets[0].Tag)
+		}
+		if !strings.Contains(encoded, "geosite-bilibili") {
+			t.Fatalf("key %s: rule set not emitted:\n%s", key, encoded)
+		}
+	}
+}
+
+// The rule set fields may arrive with any separator convention.
+func TestRuleSetFieldSpellingsAreAccepted(t *testing.T) {
+	const settings = `{"rule-sets": [
+	  {"tag": "my-set", "type": "remote", "format": "binary",
+	   "url": "https://example.com/x.srs", "updateInterval": "24h"}
+	]}`
+	opts := buildFromSettings(t, settings)
+	if len(opts.RuleSets) != 1 {
+		t.Fatalf("expected 1 rule set, got %d", len(opts.RuleSets))
+	}
+	if opts.RuleSets[0].UpdateInterval != "24h" {
+		t.Fatalf("updateInterval not accepted, got %q", opts.RuleSets[0].UpdateInterval)
+	}
+}
+
+// The routing rules themselves must keep working under the plural kebab spelling
+// of their own key as well.
+func TestRouteRulePluralKebabSpelling(t *testing.T) {
+	const settings = `{"route-rules": {"rules": [
+	  {"outbound": "direct", "domain_suffix": [".plural.test"]}
+	]}}`
+	encoded, opts := buildAndMarshal(t, settings)
+	if len(opts.RouteRules.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(opts.RouteRules.Rules))
+	}
+	if !strings.Contains(encoded, "plural.test") {
+		t.Fatalf("rule not emitted:\n%s", extractRoute(t, encoded))
+	}
+}
+
 // A declared rule set must be emitted in route.rule_set so the reference is
 // resolvable.
 func TestUserRuleSetDefinitionIsEmitted(t *testing.T) {

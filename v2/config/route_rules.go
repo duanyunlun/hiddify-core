@@ -718,6 +718,40 @@ type RuleSetEntry struct {
 	DownloadDetour string `json:"download_detour,omitempty"`
 }
 
+// ruleSetEntryKeyAliases maps the spelling-independent form of a key onto the
+// canonical json tag, so that updateInterval / update-interval / update_interval
+// all work.
+var ruleSetEntryKeyAliases = map[string]string{
+	"tag":            "tag",
+	"type":           "type",
+	"format":         "format",
+	"url":            "url",
+	"path":           "path",
+	"updateinterval": "update_interval",
+	"downloaddetour": "download_detour",
+}
+
+func (e *RuleSetEntry) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	normalized := make(map[string]json.RawMessage, len(raw))
+	for key, value := range raw {
+		canonical, ok := ruleSetEntryKeyAliases[normalizeOptionKey(key)]
+		if !ok {
+			continue
+		}
+		normalized[canonical] = value
+	}
+	reencoded, err := json.Marshal(normalized)
+	if err != nil {
+		return err
+	}
+	type plain RuleSetEntry
+	return json.Unmarshal(reencoded, (*plain)(e))
+}
+
 // MakeRuleSet converts the entry into a sing-box rule set definition. The second
 // return value is false when the entry cannot be represented.
 func (e RuleSetEntry) MakeRuleSet() (option.RuleSet, bool) {

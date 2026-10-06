@@ -55,19 +55,51 @@ type HiddifyOptions struct {
 	ChainOptions
 }
 
-// routeRuleKeys / ruleSetKeys are the top level spellings the clients have used.
-// All of them are accepted so that a rename on the client side degrades to
-// "rules ignored" instead of silently losing the whole feature.
-var routeRuleKeys = []string{"route-rule", "route_rule", "routeRule", "routeRules", "route_rules"}
+// normalizeOptionKey reduces a key to a spelling-independent form by dropping
+// the separators and lower-casing it, so that every variant a client may emit
+// ("rule-sets", "rule_sets", "ruleSets", "rulesets") collapses to one string.
+//
+// Matching on the collapsed form instead of an exhaustive list is deliberate:
+// the client serializes this struct with FieldRename.kebab, which turned the
+// ruleSets field into "rule-sets" while an earlier hand-written list only had
+// "rule-set" and "rule_set", and the whole list was silently dropped.
+func normalizeOptionKey(key string) string {
+	var builder strings.Builder
+	builder.Grow(len(key))
+	for _, char := range key {
+		switch {
+		case char == '-' || char == '_' || char == ' ' || char == '.':
+			// separator: drop it
+		case char >= 'A' && char <= 'Z':
+			builder.WriteRune(char - 'A' + 'a')
+		default:
+			builder.WriteRune(char)
+		}
+	}
+	return builder.String()
+}
 
-var ruleSetKeys = []string{"rule-set", "rule_set", "ruleSet", "ruleSets", "rule_sets"}
+// takeByNormalizedKey removes and returns the first entry whose normalised key
+// matches one of names.
+func takeByNormalizedKey(m map[string]json.RawMessage, names ...string) (json.RawMessage, bool) {
+	for key, value := range m {
+		normalizedKey := normalizeOptionKey(key)
+		for _, name := range names {
+			if normalizedKey == name {
+				delete(m, key)
+				return value, true
+			}
+		}
+	}
+	return nil, false
+}
 
 // UnmarshalJSON is a compatibility layer in front of the generated decoder. It
 //   - folds the camelCase / snake_case / kebab-case spellings of every option key
 //     onto the canonical kebab-case tag, because the client serializes this
 //     struct with FieldRename.kebab while the tags are a mix of both;
 //   - collects the routing rules and rule set declarations, which are accepted
-//     under several top level key names.
+//     under any spelling of "route rule(s)" / "rule set(s)".
 func (h *HiddifyOptions) UnmarshalJSON(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "null" {
@@ -84,27 +116,19 @@ func (h *HiddifyOptions) UnmarshalJSON(data []byte) error {
 			normalized[canonical] = value
 		}
 	}
-	for _, key := range routeRuleKeys {
-		if value, ok := normalized[key]; ok {
-			var rules RouteRules
-			if err := json.Unmarshal(value, &rules); err != nil {
-				return fmt.Errorf("invalid route rules: %w", err)
-			}
-			h.RouteRules = rules
-			delete(normalized, key)
-			break
+	if value, ok := takeByNormalizedKey(normalized, "routerule", "routerules"); ok {
+		var rules RouteRules
+		if err := json.Unmarshal(value, &rules); err != nil {
+			return fmt.Errorf("invalid route rules: %w", err)
 		}
+		h.RouteRules = rules
 	}
-	for _, key := range ruleSetKeys {
-		if value, ok := normalized[key]; ok {
-			var entries []RuleSetEntry
-			if err := json.Unmarshal(value, &entries); err != nil {
-				return fmt.Errorf("invalid rule sets: %w", err)
-			}
-			h.RuleSets = entries
-			delete(normalized, key)
-			break
+	if value, ok := takeByNormalizedKey(normalized, "ruleset", "rulesets"); ok {
+		var entries []RuleSetEntry
+		if err := json.Unmarshal(value, &entries); err != nil {
+			return fmt.Errorf("invalid rule sets: %w", err)
 		}
+		h.RuleSets = entries
 	}
 	reencoded, err := json.Marshal(normalized)
 	if err != nil {
