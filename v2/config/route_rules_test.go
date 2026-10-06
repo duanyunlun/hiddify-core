@@ -330,6 +330,44 @@ func TestRouteRulePluralKebabSpelling(t *testing.T) {
 	}
 }
 
+// The Flutter client used to send the rule set list as a JSON string holding
+// the array, so the same payload can arrive either as `[...]` or as `"[...]"`.
+// Both must parse: a stringified array reaching a slice produced
+// "cannot unmarshal string into Go value of type []config.RuleSetEntry", which
+// failed the whole settings decode and therefore broke adding a profile.
+func TestRuleSetStringifiedArrayIsAccepted(t *testing.T) {
+	const inner = `[{"tag":"geosite-bilibili","type":"remote","format":"binary",` +
+		`"url":"https://example.com/bilibili.srs","update_interval":"120h"}]`
+	escaped, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	settings := `{"rule-sets": ` + string(escaped) + `}`
+	encoded, opts := buildAndMarshal(t, settings)
+	if len(opts.RuleSets) != 1 {
+		t.Fatalf("expected 1 rule set from a stringified array, got %d", len(opts.RuleSets))
+	}
+	if opts.RuleSets[0].Tag != "geosite-bilibili" {
+		t.Fatalf("tag not parsed: %q", opts.RuleSets[0].Tag)
+	}
+	if opts.RuleSets[0].UpdateInterval != "120h" {
+		t.Fatalf("update_interval not parsed: %q", opts.RuleSets[0].UpdateInterval)
+	}
+	if !strings.Contains(encoded, "geosite-bilibili") {
+		t.Fatalf("rule set not emitted:\n%s", encoded)
+	}
+}
+
+// An empty stringified array is what an app with no rule sets sends; it must be
+// treated as "no rule sets" rather than as an error.
+func TestRuleSetEmptyStringifiedArrayIsAccepted(t *testing.T) {
+	const settings = `{"rule-sets": "[]"}`
+	_, opts := buildAndMarshal(t, settings)
+	if len(opts.RuleSets) != 0 {
+		t.Fatalf("expected 0 rule sets, got %d", len(opts.RuleSets))
+	}
+}
+
 // A declared rule set must be emitted in route.rule_set so the reference is
 // resolvable.
 func TestUserRuleSetDefinitionIsEmitted(t *testing.T) {

@@ -79,6 +79,30 @@ func normalizeOptionKey(key string) string {
 	return builder.String()
 }
 
+// unwrapJSONString returns the value itself, or, when the value is a JSON string,
+// the JSON it contains.
+//
+// The Flutter client serialises its rule set field as a string holding the JSON
+// array (its model declares the field as a String), so the same logical payload
+// arrives either as `[...]` or as `"[...]"`. Accepting both keeps the two sides
+// working independently: a client that switches to a real array, or an older one
+// that still sends a string, both parse.
+func unwrapJSONString(value json.RawMessage) json.RawMessage {
+	trimmed := strings.TrimSpace(string(value))
+	if len(trimmed) == 0 || trimmed[0] != '"' {
+		return value
+	}
+	var inner string
+	if err := json.Unmarshal(value, &inner); err != nil {
+		return value
+	}
+	innerTrimmed := strings.TrimSpace(inner)
+	if innerTrimmed == "" {
+		return json.RawMessage("null")
+	}
+	return json.RawMessage(innerTrimmed)
+}
+
 // takeByNormalizedKey removes and returns the first entry whose normalised key
 // matches one of names.
 func takeByNormalizedKey(m map[string]json.RawMessage, names ...string) (json.RawMessage, bool) {
@@ -118,14 +142,14 @@ func (h *HiddifyOptions) UnmarshalJSON(data []byte) error {
 	}
 	if value, ok := takeByNormalizedKey(normalized, "routerule", "routerules"); ok {
 		var rules RouteRules
-		if err := json.Unmarshal(value, &rules); err != nil {
+		if err := json.Unmarshal(unwrapJSONString(value), &rules); err != nil {
 			return fmt.Errorf("invalid route rules: %w", err)
 		}
 		h.RouteRules = rules
 	}
 	if value, ok := takeByNormalizedKey(normalized, "ruleset", "rulesets"); ok {
 		var entries []RuleSetEntry
-		if err := json.Unmarshal(value, &entries); err != nil {
+		if err := json.Unmarshal(unwrapJSONString(value), &entries); err != nil {
 			return fmt.Errorf("invalid rule sets: %w", err)
 		}
 		h.RuleSets = entries
