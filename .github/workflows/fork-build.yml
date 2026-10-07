@@ -110,21 +110,28 @@ jobs:
         run: |
           set -e
           if [ "${{ matrix.target }}" = "linux-amd64" ]; then
-            # `build-linux` loads cronet/cronet.env, which is written by the
-            # `cronet-linux-amd64` target. That target builds cronet from source
-            # (it clones cronet-go with its submodules and downloads a whole
-            # toolchain), which is far more than this fork needs. Building with
-            # VARIANT=purego makes sing-box resolve libcronet at runtime instead
-            # of linking it, so the env file only has to exist.
-            mkdir -p cronet
+            # `make linux-amd64` is not used here on purpose. Its recipe first
+            # loads cronet/cronet.env, which the cronet-linux-amd64 target writes
+            # after cloning cronet-go with its submodules and downloading a whole
+            # toolchain: far more than this fork needs, because with_purego makes
+            # sing-box resolve libcronet at runtime instead of linking it.
+            # It then builds the CLI from ./cmd/bydll, a cgo build that fails on
+            # this image with "collect2: fatal error: cannot find 'ld'" even
+            # though ld is installed and the library link above it succeeds. The
+            # recipe ends with `;` rather than `&&`, so it reports success and
+            # carries on, and the target only fails at the end.
+            #
+            # Building the two commands directly is both clearer and more
+            # reliable: the c-shared library exactly as the recipe builds it, and
+            # the CLI statically from ./cmd/main, which needs no cgo at all.
+            make prepare
+            mkdir -p bin/lib cronet
             : > cronet/cronet.env
-            VARIANT=purego make linux-amd64
-            # The app's linux/CMakeLists.txt installs HiddifyCli from
-            # hiddify-core/bin and fails when it is absent, so build it here.
-            # `build-linux` leaves the CLI commented out.
+            TAGS="$(grep -E '^TAGS=' Makefile | cut -d= -f2)"
+            CGO_ENABLED=1 go build -trimpath -ldflags="-w -s -checklinkname=0 -buildid=" \
+              -buildmode=c-shared -tags "$TAGS,with_purego" -o bin/lib/hiddify-core.so ./platform/desktop
             go build -trimpath -ldflags="-w -s -checklinkname=0 -buildid=" \
-              -tags "$(grep -E '^TAGS=' Makefile | cut -d= -f2),with_purego" \
-              -o bin/HiddifyCli ./cmd/main
+              -tags "$TAGS,with_purego" -o bin/HiddifyCli ./cmd/main
             chmod +x bin/HiddifyCli
           else
             make ${{ matrix.target }}
