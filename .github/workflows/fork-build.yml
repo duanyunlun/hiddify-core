@@ -4,8 +4,9 @@ name: Build fork artifacts
 # every run consumes the account's Actions minutes.
 #
 # Builds only what this fork needs:
-#   - hiddify-lib-android.tar.gz    (libhiddify-core.so + hiddify-core.aar)
-#   - hiddify-lib-windows-amd64.tar.gz (hiddify-core.dll + HiddifyCli.exe)
+#   - hiddify-lib-android.tar.gz        (hiddify-core.aar)
+#   - hiddify-lib-windows-amd64.tar.gz  (hiddify-core.dll + HiddifyCli.exe + desktop.h)
+#   - hiddify-lib-macos.tar.gz          (hiddify-core.dylib + desktop.h)
 #
 # The asset names match what hiddify-app's Makefile downloads
 # ($(CORE_NAME)-<platform>.tar.gz, CORE_NAME=hiddify-lib), so pointing the app at
@@ -29,15 +30,24 @@ permissions:
 jobs:
   build:
     name: Build ${{ matrix.artifact }}
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - artifact: hiddify-lib-android
             target: android
+            runner: ubuntu-22.04
           - artifact: hiddify-lib-windows-amd64
             target: windows-amd64
+            runner: ubuntu-22.04
+          # The desktop library for macOS is a c-shared dylib that is lipo'd from
+          # an amd64 and an arm64 build, so it needs a real macOS toolchain: it
+          # cannot be produced from Linux or Windows. macOS runners are free for
+          # public repositories, which this one is.
+          - artifact: hiddify-lib-macos
+            target: macos
+            runner: macos-14
 
     steps:
       - name: Checkout
@@ -75,7 +85,8 @@ jobs:
       - name: Show versions
         run: |
           go version
-          gcc --version | head -n1
+          (gcc --version || clang --version) | head -n1
+          uname -a
 
       - name: Build
         env:
@@ -93,14 +104,19 @@ jobs:
             # are packaged inside it, exactly as the upstream build does.
             test -f bin/hiddify-core.aar || { echo "hiddify-core.aar missing"; exit 1; }
             tar -czvf "out/${{ matrix.artifact }}.tar.gz" -C bin hiddify-core.aar
+          elif [ "${{ matrix.target }}" = "macos" ]; then
+            test -f bin/hiddify-core.dylib || { echo "hiddify-core.dylib missing"; exit 1; }
+            # `make macos` leaves the cgo header as bin/desktop.h. Upstream's
+            # macOS tarball ships the dylib alone, but hiddify-app's ffigen needs
+            # hiddify-core/bin/desktop.h, so ship it here as well and the app
+            # build no longer needs a C toolchain to regenerate it.
+            test -f bin/desktop.h || { echo "bin/desktop.h missing"; exit 1; }
+            tar -czvf "out/${{ matrix.artifact }}.tar.gz" -C bin hiddify-core.dylib desktop.h
           else
             test -f bin/hiddify-core.dll || { echo "hiddify-core.dll missing"; exit 1; }
             test -f bin/HiddifyCli.exe || { echo "HiddifyCli.exe missing"; exit 1; }
-            # Ship the cgo-generated header as well. hiddify-app's ffigen needs
-            # hiddify-core/bin/desktop.h, and upstream's release tarball does not
-            # contain any header, which forces the app build to have a C
-            # toolchain to regenerate it. Including it here removes that
-            # requirement.
+            # Ship the cgo-generated header as well, for the same reason as the
+            # macOS leg above.
             if [ -f bin/hiddify-core.h ]; then
               cp bin/hiddify-core.h bin/desktop.h
               tar -czvf "out/${{ matrix.artifact }}.tar.gz" \
