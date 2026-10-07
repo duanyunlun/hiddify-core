@@ -48,6 +48,9 @@ jobs:
           - artifact: hiddify-lib-macos
             target: macos
             runner: macos-14
+          - artifact: hiddify-lib-linux-amd64
+            target: linux-amd64
+            runner: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -93,7 +96,28 @@ jobs:
           # Only needed by the android target; setup-ndk leaves it empty for
           # windows, which is harmless.
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: make ${{ matrix.target }}
+        run: |
+          set -e
+          if [ "${{ matrix.target }}" = "linux-amd64" ]; then
+            # `build-linux` loads cronet/cronet.env, which is written by the
+            # `cronet-linux-amd64` target. That target builds cronet from source
+            # (it clones cronet-go with its submodules and downloads a whole
+            # toolchain), which is far more than this fork needs. Building with
+            # VARIANT=purego makes sing-box resolve libcronet at runtime instead
+            # of linking it, so the env file only has to exist.
+            mkdir -p cronet
+            : > cronet/cronet.env
+            VARIANT=purego make linux-amd64
+            # The app's linux/CMakeLists.txt installs HiddifyCli from
+            # hiddify-core/bin and fails when it is absent, so build it here.
+            # `build-linux` leaves the CLI commented out.
+            go build -trimpath -ldflags="-w -s -checklinkname=0 -buildid=" \
+              -tags "$(grep -E '^TAGS=' Makefile | cut -d= -f2),with_purego" \
+              -o bin/HiddifyCli ./cmd/main
+            chmod +x bin/HiddifyCli
+          else
+            make ${{ matrix.target }}
+          fi
 
       - name: Package
         run: |
@@ -112,6 +136,12 @@ jobs:
             # build no longer needs a C toolchain to regenerate it.
             test -f bin/desktop.h || { echo "bin/desktop.h missing"; exit 1; }
             tar -czvf "out/${{ matrix.artifact }}.tar.gz" -C bin hiddify-core.dylib desktop.h
+          elif [ "${{ matrix.target }}" = "linux-amd64" ]; then
+            # Layout the app expects: hiddify-core/bin/lib/hiddify-core.so and
+            # hiddify-core/bin/HiddifyCli, as installed by linux/CMakeLists.txt.
+            test -f bin/lib/hiddify-core.so || { echo "bin/lib/hiddify-core.so missing"; exit 1; }
+            test -f bin/HiddifyCli || { echo "bin/HiddifyCli missing"; exit 1; }
+            tar -czvf "out/${{ matrix.artifact }}.tar.gz" -C bin lib/hiddify-core.so HiddifyCli
           else
             test -f bin/hiddify-core.dll || { echo "hiddify-core.dll missing"; exit 1; }
             test -f bin/HiddifyCli.exe || { echo "HiddifyCli.exe missing"; exit 1; }
