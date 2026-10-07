@@ -71,6 +71,17 @@ jobs:
           sudo apt-get install -y gcc-mingw-w64-x86-64
           x86_64-w64-mingw32-gcc --version | head -n1
 
+      # The linux target links a c-shared library with the host toolchain, and
+      # the image does not always provide a linker for that, which shows up as
+      # "collect2: fatal error: cannot find 'ld'".
+      - name: Install build tools
+        if: matrix.target == 'linux-amd64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential binutils
+          gcc --version | head -n1
+          ld --version | head -n1
+
       - name: Setup Java 17
         if: matrix.target == 'android'
         uses: actions/setup-java@v4
